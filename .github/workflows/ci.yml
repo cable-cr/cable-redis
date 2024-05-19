@@ -1,0 +1,54 @@
+name: Cable.cr RedisBackend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: "*"
+
+jobs:
+  specs:
+    env:
+      CABLE_BACKEND_URL: redis://redis:6379
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_file:
+          - shard.yml
+        crystal_version:
+          - 1.10.0
+          - latest
+        experimental:
+          - false
+        include:
+          - crystal_version: nightly
+            experimental: true
+    runs-on: ubuntu-latest
+    container: crystallang/crystal:${{ matrix.crystal_version }}
+    continue-on-error: ${{ matrix.experimental }}
+    services:
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
+        # Set health checks to wait until redis has started
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Crystal
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/crystal
+          key: ${{ runner.os }}-crystal
+      - name: Install shards
+        run: shards install
+      - name: Format
+        run: crystal tool format --check
+      - name: Lint
+        run: ./bin/ameba
+      - name: Run tests
+        run: crystal spec
