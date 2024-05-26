@@ -1,4 +1,3 @@
-require "cable"
 require "redis"
 
 module Cable
