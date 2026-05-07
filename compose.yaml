@@ -1,0 +1,35 @@
+# Development environment for cable-redis.
+#
+# Usage:
+#   docker compose run --rm app shards install
+#   docker compose run --rm app crystal spec
+#   docker compose run --rm app sh                # interactive shell
+#   docker compose exec redis redis-cli           # poke at Redis
+#   docker compose down -v                        # tear down + drop volumes
+#
+# Override the Crystal version (matches the CI matrix: 1.10.0, latest):
+#   CRYSTAL_VERSION=1.10.0 docker compose run --rm app crystal spec
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  app:
+    image: crystallang/crystal:${CRYSTAL_VERSION:-latest}-alpine
+    working_dir: /app
+    volumes:
+      - .:/app:z
+      - crystal-cache:/root/.cache/crystal
+    environment:
+      CABLE_BACKEND_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["sh"]
+
+volumes:
+  crystal-cache:
