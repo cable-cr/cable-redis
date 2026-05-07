@@ -75,15 +75,21 @@ module Cable
               end
             end
           end
-          break # subscribe returned cleanly — exit the reconnect loop
+          # Falling through here means the subscribe block returned without
+          # raising. jgaskins/redis exits its read loop cleanly when `read?`
+          # returns nil — which is what `CLIENT KILL TYPE pubsub` and other
+          # server-side disconnects look like — so we must treat a clean
+          # return as a reconnect signal, not as success.
         rescue e : IO::Error
-          break if @shutting_down
-          Cable::Logger.error(exception: e) { "Cable::RedisBackend subscribe loop crashed; reconnecting in #{SUBSCRIBE_RECONNECT_BACKOFF.total_seconds}s" }
+          Cable::Logger.error(exception: e) { "Cable::RedisBackend subscribe loop crashed" }
           Cable.settings.on_error.call(e, "Cable::RedisBackend#open_subscribe_connection (reconnecting)", nil)
-          sleep SUBSCRIBE_RECONNECT_BACKOFF
-          break if @shutting_down
-          @redis_subscribe = Redis::Connection.new(URI.parse(Cable.settings.url))
         end
+
+        break if @shutting_down
+        Cable::Logger.warn { "Cable::RedisBackend subscribe disconnected; reconnecting in #{SUBSCRIBE_RECONNECT_BACKOFF.total_seconds}s" }
+        sleep SUBSCRIBE_RECONNECT_BACKOFF
+        break if @shutting_down
+        @redis_subscribe = Redis::Connection.new(URI.parse(Cable.settings.url))
       end
     end
 
