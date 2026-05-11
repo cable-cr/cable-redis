@@ -21,7 +21,7 @@ describe Cable::RedisBackend do
   # fresh connection and replay subscriptions, then verify message dispatch
   # resumes. This test is timing-sensitive by nature — if it flakes, the
   # `sleep` after the kill needs to grow to comfortably exceed
-  # SUBSCRIBE_RECONNECT_BACKOFF + replay time.
+  # Cable::RedisBackend::SUBSCRIBE_RECONNECT_BACKOFF + replay time.
   describe "subscribe-connection recovery (cable-cr/cable#105)" do
     it "resumes message dispatch after the pubsub TCP is killed" do
       connect do |connection, socket|
@@ -49,6 +49,50 @@ describe Cable::RedisBackend do
         sleep 0.5
 
         socket.messages.any?(&.includes?("after-kill")).should be_true
+      end
+    end
+
+    # Exercises the harder failure mode: not just a clean socket drop, but the
+    # entire backend being unreachable across multiple reconnect cycles. The
+    # original PR only wrapped the pubsub block in a rescue; the
+    # `Redis::Connection.new(...)` call on the reopen path was unprotected, so
+    # the first DNS/connect failure during an outage crashed the subscribe
+    # fiber and message dispatch never recovered, even after Redis came back.
+    it "survives reopen failures and recovers when the backend comes back" do
+      connect do |connection, socket|
+        connection.receive({"command" => "subscribe", "identifier" => {channel: "ChatChannel", room: "1"}.to_json}.to_json)
+        sleep 100.milliseconds
+
+        Cable.server.publish(channel: "chat_1", message: %({"foo": "before-outage"}))
+        sleep 200.milliseconds
+        socket.messages.any?(&.includes?("before-outage")).should be_true
+
+        real_url = Cable.settings.url
+
+        # Point the reconnect target at a port nothing's listening on, then
+        # kill the live pubsub socket. The next reopen will hit
+        # Socket::ConnectError — the regression this spec guards.
+        Cable.settings.url = "redis://127.0.0.1:1"
+
+        backend = Cable.server.backend.as(Cable::RedisBackend)
+        killed = backend.publish_connection.run({"CLIENT", "KILL", "TYPE", "pubsub"})
+        killed.to_s.to_i.should be > 0
+
+        # Sit in the failing-reopen state for a few backoff cycles. Before the
+        # fix, the fiber would die on the first iteration here.
+        sleep(Cable::RedisBackend::SUBSCRIBE_RECONNECT_BACKOFF * 3 + 500.milliseconds)
+
+        # Bring the backend back by restoring the URL. The next iteration's
+        # reopen should succeed and replay_tracked_subscriptions should
+        # re-register chat_1.
+        Cable.settings.url = real_url
+        sleep(Cable::RedisBackend::SUBSCRIBE_RECONNECT_BACKOFF + 1.5.seconds)
+
+        Cable.server.publish(channel: "chat_1", message: %({"foo": "after-recovery"}))
+        sleep 500.milliseconds
+        socket.messages.any?(&.includes?("after-recovery")).should be_true
+      ensure
+        Cable.settings.url = real_url if real_url
       end
     end
   end

@@ -1,4 +1,5 @@
 require "redis"
+require "socket"
 
 module Cable
   class RedisBackend < Cable::BackendCore
@@ -80,7 +81,7 @@ module Cable
           # returns nil — which is what `CLIENT KILL TYPE pubsub` and other
           # server-side disconnects look like — so we must treat a clean
           # return as a reconnect signal, not as success.
-        rescue e : IO::Error
+        rescue e : IO::Error | Socket::Error
           Cable::Logger.error(exception: e) { "Cable::RedisBackend subscribe loop crashed" }
           Cable.settings.on_error.call(e, "Cable::RedisBackend#open_subscribe_connection (reconnecting)", nil)
         end
@@ -89,7 +90,19 @@ module Cable
         Cable::Logger.warn { "Cable::RedisBackend subscribe disconnected; reconnecting in #{SUBSCRIBE_RECONNECT_BACKOFF.total_seconds}s" }
         sleep SUBSCRIBE_RECONNECT_BACKOFF
         break if @shutting_down
-        @redis_subscribe = Redis::Connection.new(URI.parse(Cable.settings.url))
+
+        begin
+          @redis_subscribe = Redis::Connection.new(URI.parse(Cable.settings.url))
+        rescue e : IO::Error | Socket::Error
+          # Backend is still unreachable (DNS unresolvable, TCP refused,
+          # network down, etc.). Leave the dead @redis_subscribe in place;
+          # the next loop iteration's `.subscribe` call will raise IO::Error
+          # immediately, get caught by the outer rescue, and we'll back off
+          # and retry the open here. on_error is intentionally NOT invoked
+          # for reopen failures — during a multi-second outage this loop
+          # ticks once per second and would flood error trackers.
+          Cable::Logger.warn(exception: e) { "Cable::RedisBackend reopen failed; will retry after backoff" }
+        end
       end
     end
 
