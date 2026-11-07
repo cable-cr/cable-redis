@@ -95,6 +95,44 @@ describe Cable::RedisBackend do
         Cable.settings.url = real_url if real_url
       end
     end
+
+    # Cable.restart shuts the old server down and then builds a new one. If that
+    # build raises while the backend is unreachable, nothing is subscribed once
+    # it returns, and nothing triggers another restart.
+    it "recovers when Cable.restart runs while the backend is unreachable" do
+      real_url = Cable.settings.url
+      begin
+        Cable.settings.url = "redis://127.0.0.1:1"
+        Cable.restart
+
+        Cable.settings.url = real_url
+        sleep(Cable::RedisBackend::SUBSCRIBE_RECONNECT_BACKOFF + 1.5.seconds)
+
+        connect do |connection, socket|
+          connection.receive({"command" => "subscribe", "identifier" => {channel: "ChatChannel", room: "1"}.to_json}.to_json)
+          sleep 200.milliseconds
+
+          Cable.server.publish(channel: "chat_1", message: %({"foo": "after-restart"}))
+          sleep 500.milliseconds
+          socket.messages.any?(&.includes?("after-restart")).should be_true
+        end
+      ensure
+        Cable.settings.url = real_url
+      end
+    end
+
+    it "delivers on a fresh server without a reconnect" do
+      Cable.restart
+
+      connect do |connection, socket|
+        connection.receive({"command" => "subscribe", "identifier" => {channel: "ChatChannel", room: "1"}.to_json}.to_json)
+        sleep 200.milliseconds
+
+        Cable.server.publish(channel: "chat_1", message: %({"foo": "first-message"}))
+        sleep 500.milliseconds
+        socket.messages.any?(&.includes?("first-message")).should be_true
+      end
+    end
   end
 end
 

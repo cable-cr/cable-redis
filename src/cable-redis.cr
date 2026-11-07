@@ -13,8 +13,29 @@ module Cable
     register "rediss" # rediss://
 
     # connection management
-    getter redis_subscribe : Redis::Connection = Redis::Connection.new(URI.parse(Cable.settings.url))
-    getter redis_publish : Redis::Client = Redis::Client.new(URI.parse(Cable.settings.url))
+    #
+    # Lazy, so a backend can be built while Redis is down. Cable.restart has
+    # already shut the old server down by the time it builds this one, so a
+    # raise here would leave nothing subscribed once Redis returns.
+    #
+    # The mutex matters: connecting yields, so without it the subscribe fiber and
+    # the first client each open a connection, and subscriptions land on one the
+    # read loop isn't reading.
+    @redis_subscribe : Redis::Connection?
+    @redis_publish : Redis::Client?
+    @connection_mutex = Mutex.new
+
+    def redis_subscribe : Redis::Connection
+      @connection_mutex.synchronize do
+        @redis_subscribe ||= Redis::Connection.new(URI.parse(Cable.settings.url))
+      end
+    end
+
+    def redis_publish : Redis::Client
+      @connection_mutex.synchronize do
+        @redis_publish ||= Redis::Client.new(URI.parse(Cable.settings.url))
+      end
+    end
 
     # Tracks every stream identifier we have an active SUBSCRIBE on, so that
     # if the underlying TCP dies we can replay the subscriptions onto a fresh
@@ -39,14 +60,16 @@ module Cable
 
     def close_subscribe_connection
       @shutting_down = true
-      redis_subscribe.unsubscribe
-      redis_subscribe.close
+      @redis_subscribe.try do |connection|
+        connection.unsubscribe
+        connection.close
+      end
     rescue IO::Error
       # connection was already torn down
     end
 
     def close_publish_connection
-      redis_publish.close
+      @redis_publish.try(&.close)
     rescue IO::Error
       # connection was already torn down
     end
