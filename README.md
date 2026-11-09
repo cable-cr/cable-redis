@@ -127,6 +127,25 @@ Options;
 5. Commit it
 6. GO TO 1
 
+### With Docker
+
+If you'd rather not install Crystal locally, a `compose.yaml` is provided that
+brings up Redis and a Crystal container with the source bind-mounted:
+
+```sh
+docker compose run --rm app shards install
+docker compose run --rm app crystal spec
+docker compose run --rm app crystal tool format spec/ src/
+docker compose run --rm app ./bin/ameba
+docker compose down -v   # tear down + drop volumes when done
+```
+
+The Crystal version defaults to `latest`; override it to match the CI floor:
+
+```sh
+CRYSTAL_VERSION=1.10.0 docker compose run --rm app crystal spec
+```
+
 ## Contributing
 
 1. Fork it (<https://github.com/cable-cr/cable-redis/fork>)
