@@ -173,12 +173,10 @@ module Cable
     private def replay_tracked_subscriptions
       channels_to_replay = @subscribed_channels_mutex.synchronize { @subscribed_channels.dup }
       channels_to_replay.each do |id|
-        begin
-          redis_subscribe.subscribe(id)
-        rescue e : IO::Error
-          # The next reconnect iteration will retry from the tracked set.
-          Cable::Logger.error(exception: e) { "Cable::RedisBackend channel replay failed for #{id}" }
-        end
+        redis_subscribe.subscribe(id)
+      rescue e : IO::Error
+        # The next reconnect iteration will retry from the tracked set.
+        Cable::Logger.error(exception: e) { "Cable::RedisBackend channel replay failed for #{id}" }
       end
     end
   end
